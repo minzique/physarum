@@ -61,6 +61,67 @@ function createFramebuffer(gl, texture) {
   return framebuffer;
 }
 
+function createStateFramebuffer(gl, stateTexture, traitTexture) {
+  const framebuffer = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, stateTexture, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, traitTexture, 0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    throw new Error("State framebuffer incomplete");
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return framebuffer;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function generateFoodData(preset) {
+  const size = preset.food.textureSize;
+  const data = new Float32Array(size * size * 4);
+  const spots = [];
+
+  for (let index = 0; index < preset.food.spots; index += 1) {
+    spots.push({
+      x: Math.random(),
+      y: Math.random(),
+      radius: (preset.food.minRadius + Math.random() * (preset.food.maxRadius - preset.food.minRadius)) / size,
+      amount: 0.30 + Math.random() * preset.food.amplitude,
+      type: Math.random(),
+    });
+  }
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const uvx = x / (size - 1);
+      const uvy = y / (size - 1);
+      let amount = preset.food.floor;
+      let weightedType = amount * (0.5 + 0.5 * Math.sin((uvx + uvy) * Math.PI * 2.0));
+
+      for (const spot of spots) {
+        const dx = uvx - spot.x;
+        const dy = uvy - spot.y;
+        const falloff = Math.exp(-(dx * dx + dy * dy) / (2 * spot.radius * spot.radius));
+        const contribution = spot.amount * falloff;
+        amount += contribution;
+        weightedType += contribution * spot.type;
+      }
+
+      amount = clamp(amount, 0, 1.2);
+      const typeValue = amount > 0.0001 ? clamp(weightedType / amount, 0, 1) : 0.5;
+      const offset = (y * size + x) * 4;
+      data[offset] = amount;
+      data[offset + 1] = typeValue;
+      data[offset + 2] = 0;
+      data[offset + 3] = 1;
+    }
+  }
+
+  return { size, data, spots };
+}
+
 export class PhysarumSimulation {
   constructor({ canvas, presets, initialPresetIndex, onPresetChange, onStatsChange, onThemeChange }) {
     this.canvas = canvas;
@@ -81,10 +142,14 @@ export class PhysarumSimulation {
 
     this.emptyVAO = this.gl.createVertexArray();
     this.mouse = { x: 0, y: 0, active: false };
-    this.agentTextures = [null, null];
-    this.agentFramebuffers = [null, null];
+
+    this.stateTextures = [null, null];
+    this.traitTextures = [null, null];
+    this.stateFramebuffers = [null, null];
     this.trailTextures = [null, null];
     this.trailFramebuffers = [null, null];
+    this.foodTexture = null;
+
     this.pingAgent = 0;
     this.pingTrail = 0;
     this.totalSteps = 0;
@@ -130,77 +195,91 @@ export class PhysarumSimulation {
       ? createProgram(gl, AGENT_VERTEX_SHADER, sources.agentRenderFragmentShader)
       : null;
 
-    this.stepUniforms = getUniforms(gl, this.stepProgram, "uAgents", "uTrail", "uTrailRes", "uFrame");
-    this.depositUniforms = getUniforms(gl, this.depositProgram, "uAgents", "uTrailRes", "uAgentTexSize", "uPointSize");
+    this.stepUniforms = getUniforms(gl, this.stepProgram, "uState", "uTraits", "uTrail", "uFood", "uTrailRes", "uFrame");
+    this.depositUniforms = getUniforms(gl, this.depositProgram, "uState", "uTraits", "uTrailRes", "uAgentTexSize", "uPointSize");
     this.diffuseUniforms = getUniforms(gl, this.diffuseProgram, "uTrail", "uPixelSize", "uDecay", "uMouse");
-    this.displayUniforms = getUniforms(gl, this.displayProgram, "uTrail", "uResolution", "uTime");
+    this.displayUniforms = getUniforms(gl, this.displayProgram, "uTrail", "uFood", "uResolution", "uTime");
     this.agentRenderUniforms = this.agentRenderProgram
-      ? getUniforms(gl, this.agentRenderProgram, "uAgents", "uTrailRes", "uAgentTexSize", "uPointSize")
+      ? getUniforms(gl, this.agentRenderProgram, "uState", "uTraits", "uTrailRes", "uAgentTexSize", "uPointSize")
       : null;
   }
 
   initAgentData() {
-    const data = new Float32Array(NUM_AGENTS * 4);
+    const stateData = new Float32Array(NUM_AGENTS * 4);
+    const traitData = new Float32Array(NUM_AGENTS * 4);
     const centerX = this.trailWidth * 0.5;
     const centerY = this.trailHeight * 0.5;
     const radius = Math.min(this.trailWidth, this.trailHeight) * this.preset.seedRadius;
+    const spots = this.foodSpots || [];
 
-    for (let index = 0; index < NUM_AGENTS; index++) {
-      const offset = index * 4;
+    for (let index = 0; index < NUM_AGENTS; index += 1) {
       const angle = Math.random() * Math.PI * 2;
-      const distance = 12 + Math.random() * radius;
-      data[offset] = centerX + Math.cos(angle) * distance;
-      data[offset + 1] = centerY + Math.sin(angle) * distance;
-      data[offset + 2] = Math.random() * Math.PI * 2;
-      data[offset + 3] = Math.random();
+      let x = centerX;
+      let y = centerY;
+
+      if (spots.length > 0) {
+        const spot = spots[Math.floor(Math.random() * spots.length)];
+        const spotAngle = Math.random() * Math.PI * 2;
+        const spotDistance = Math.sqrt(Math.random()) * spot.radius * Math.min(this.trailWidth, this.trailHeight) * 0.55;
+        x = spot.x * this.trailWidth + Math.cos(spotAngle) * spotDistance;
+        y = spot.y * this.trailHeight + Math.sin(spotAngle) * spotDistance;
+      } else {
+        const distance = 12 + Math.sqrt(Math.random()) * radius;
+        x = centerX + Math.cos(angle) * distance;
+        y = centerY + Math.sin(angle) * distance;
+      }
+
+      const stateOffset = index * 4;
+      stateData[stateOffset] = clamp(x, 0, this.trailWidth - 1);
+      stateData[stateOffset + 1] = clamp(y, 0, this.trailHeight - 1);
+      stateData[stateOffset + 2] = Math.random() * Math.PI * 2;
+      stateData[stateOffset + 3] = 0.55 + Math.random() * 0.45;
+
+      traitData[stateOffset] = Math.random();
+      traitData[stateOffset + 1] = Math.random();
+      traitData[stateOffset + 2] = Math.random();
+      traitData[stateOffset + 3] = Math.random();
     }
 
-    return data;
+    return { stateData, traitData };
   }
 
   buildResources() {
     const gl = this.gl;
 
-    for (let index = 0; index < 2; index++) {
-      if (this.agentTextures[index]) gl.deleteTexture(this.agentTextures[index]);
-      if (this.agentFramebuffers[index]) gl.deleteFramebuffer(this.agentFramebuffers[index]);
+    for (let index = 0; index < 2; index += 1) {
+      if (this.stateTextures[index]) gl.deleteTexture(this.stateTextures[index]);
+      if (this.traitTextures[index]) gl.deleteTexture(this.traitTextures[index]);
+      if (this.stateFramebuffers[index]) gl.deleteFramebuffer(this.stateFramebuffers[index]);
       if (this.trailTextures[index]) gl.deleteTexture(this.trailTextures[index]);
       if (this.trailFramebuffers[index]) gl.deleteFramebuffer(this.trailFramebuffers[index]);
     }
 
-    const agentData = this.initAgentData();
-
-    for (let index = 0; index < 2; index++) {
-      this.agentTextures[index] = createTexture(
-        gl,
-        AGENT_TEX_SIZE,
-        AGENT_TEX_SIZE,
-        gl.RGBA32F,
-        gl.RGBA,
-        gl.FLOAT,
-        index === 0 ? agentData : null,
-        gl.NEAREST,
-      );
-      this.agentFramebuffers[index] = createFramebuffer(gl, this.agentTextures[index]);
+    if (this.foodTexture) {
+      gl.deleteTexture(this.foodTexture);
     }
 
-    for (let index = 0; index < 2; index++) {
-      this.trailTextures[index] = createTexture(
-        gl,
-        this.trailWidth,
-        this.trailHeight,
-        gl.RGBA16F,
-        gl.RGBA,
-        gl.HALF_FLOAT,
-        null,
-        gl.LINEAR,
-      );
+    const food = generateFoodData(this.preset);
+    this.foodSpots = food.spots;
+    const { stateData, traitData } = this.initAgentData();
+
+    for (let index = 0; index < 2; index += 1) {
+      this.stateTextures[index] = createTexture(gl, AGENT_TEX_SIZE, AGENT_TEX_SIZE, gl.RGBA32F, gl.RGBA, gl.FLOAT, index === 0 ? stateData : null, gl.NEAREST);
+      this.traitTextures[index] = createTexture(gl, AGENT_TEX_SIZE, AGENT_TEX_SIZE, gl.RGBA32F, gl.RGBA, gl.FLOAT, index === 0 ? traitData : null, gl.NEAREST);
+      this.stateFramebuffers[index] = createStateFramebuffer(gl, this.stateTextures[index], this.traitTextures[index]);
+    }
+
+    for (let index = 0; index < 2; index += 1) {
+      this.trailTextures[index] = createTexture(gl, this.trailWidth, this.trailHeight, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, null, gl.LINEAR);
       this.trailFramebuffers[index] = createFramebuffer(gl, this.trailTextures[index]);
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.trailFramebuffers[index]);
       gl.viewport(0, 0, this.trailWidth, this.trailHeight);
-      gl.clearColor(0, 0, 0, 1);
+      gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
+
+    this.foodSize = food.size;
+    this.foodTexture = createTexture(gl, food.size, food.size, gl.RGBA32F, gl.RGBA, gl.FLOAT, food.data, gl.LINEAR);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.pingAgent = 0;
@@ -264,8 +343,6 @@ export class PhysarumSimulation {
 
   step() {
     const gl = this.gl;
-    const preset = this.preset;
-
     const readAgent = this.pingAgent;
     const writeAgent = 1 - this.pingAgent;
     const readTrail = this.pingTrail;
@@ -275,16 +352,22 @@ export class PhysarumSimulation {
 
     gl.bindVertexArray(this.emptyVAO);
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.agentFramebuffers[writeAgent]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFramebuffers[writeAgent]);
     gl.viewport(0, 0, AGENT_TEX_SIZE, AGENT_TEX_SIZE);
     gl.disable(gl.BLEND);
     gl.useProgram(this.stepProgram);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.agentTextures[readAgent]);
-    gl.uniform1i(this.stepUniforms.uAgents, 0);
+    gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[readAgent]);
+    gl.uniform1i(this.stepUniforms.uState, 0);
     gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.traitTextures[readAgent]);
+    gl.uniform1i(this.stepUniforms.uTraits, 1);
+    gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.trailTextures[readTrail]);
-    gl.uniform1i(this.stepUniforms.uTrail, 1);
+    gl.uniform1i(this.stepUniforms.uTrail, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.foodTexture);
+    gl.uniform1i(this.stepUniforms.uFood, 3);
     gl.uniform2f(this.stepUniforms.uTrailRes, this.trailWidth, this.trailHeight);
     gl.uniform1f(this.stepUniforms.uFrame, this.totalSteps);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -297,7 +380,7 @@ export class PhysarumSimulation {
     gl.bindTexture(gl.TEXTURE_2D, this.trailTextures[readTrail]);
     gl.uniform1i(this.diffuseUniforms.uTrail, 0);
     gl.uniform2f(this.diffuseUniforms.uPixelSize, 1 / this.trailWidth, 1 / this.trailHeight);
-    gl.uniform1f(this.diffuseUniforms.uDecay, preset.decay);
+    gl.uniform1f(this.diffuseUniforms.uDecay, this.preset.decay);
     gl.uniform3f(this.diffuseUniforms.uMouse, this.mouse.x, this.mouse.y, this.mouse.active ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -305,8 +388,11 @@ export class PhysarumSimulation {
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.useProgram(this.depositProgram);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.agentTextures[writeAgent]);
-    gl.uniform1i(this.depositUniforms.uAgents, 0);
+    gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[writeAgent]);
+    gl.uniform1i(this.depositUniforms.uState, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.traitTextures[writeAgent]);
+    gl.uniform1i(this.depositUniforms.uTraits, 1);
     gl.uniform2f(this.depositUniforms.uTrailRes, this.trailWidth, this.trailHeight);
     gl.uniform1f(this.depositUniforms.uAgentTexSize, AGENT_TEX_SIZE);
     gl.uniform1f(this.depositUniforms.uPointSize, 1.0);
@@ -321,7 +407,7 @@ export class PhysarumSimulation {
     const gl = this.gl;
     const elapsed = (now - this.startTime) * 0.001;
 
-    for (let index = 0; index < this.substeps; index++) {
+    for (let index = 0; index < this.substeps; index += 1) {
       this.step();
     }
 
@@ -331,6 +417,9 @@ export class PhysarumSimulation {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.trailTextures[this.pingTrail]);
     gl.uniform1i(this.displayUniforms.uTrail, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.foodTexture);
+    gl.uniform1i(this.displayUniforms.uFood, 1);
     gl.uniform2f(this.displayUniforms.uResolution, this.trailWidth, this.trailHeight);
     gl.uniform1f(this.displayUniforms.uTime, elapsed);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -340,8 +429,11 @@ export class PhysarumSimulation {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.useProgram(this.agentRenderProgram);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.agentTextures[this.pingAgent]);
-      gl.uniform1i(this.agentRenderUniforms.uAgents, 0);
+      gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[this.pingAgent]);
+      gl.uniform1i(this.agentRenderUniforms.uState, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.traitTextures[this.pingAgent]);
+      gl.uniform1i(this.agentRenderUniforms.uTraits, 1);
       gl.uniform2f(this.agentRenderUniforms.uTrailRes, this.trailWidth, this.trailHeight);
       gl.uniform1f(this.agentRenderUniforms.uAgentTexSize, AGENT_TEX_SIZE);
       gl.uniform1f(this.agentRenderUniforms.uPointSize, this.preset.pointSize);

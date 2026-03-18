@@ -1,9 +1,26 @@
-function f(value, digits = 4) {
+function fixed(value, digits = 4) {
   return Number(value).toFixed(digits);
 }
 
 function vec3(color) {
-  return color.map((value) => f(value, 2)).join(",");
+  return color.map((value) => fixed(value, 2)).join(",");
+}
+
+function spectrumGLSL(palette) {
+  return `
+vec3 spectrum(float value) {
+  vec3 c0 = vec3(${vec3(palette[0])});
+  vec3 c1 = vec3(${vec3(palette[1])});
+  vec3 c2 = vec3(${vec3(palette[2])});
+  vec3 c3 = vec3(${vec3(palette[3])});
+  vec3 c4 = vec3(${vec3(palette[4])});
+  value = clamp(value, 0.0, 1.0);
+  if (value < 0.25) return mix(c0, c1, value * 4.0);
+  if (value < 0.50) return mix(c1, c2, (value - 0.25) * 4.0);
+  if (value < 0.75) return mix(c2, c3, (value - 0.50) * 4.0);
+  return mix(c3, c4, (value - 0.75) * 4.0);
+}
+`;
 }
 
 const HASH_GLSL = `
@@ -24,24 +41,19 @@ float hash21b(vec2 p) {
   p3 += dot(p3, p3.yzx + 19.19);
   return fract((p3.x + p3.y) * p3.z);
 }
-`;
 
-function spectrumGLSL(palette) {
-  return `
-vec3 spectrum(float g) {
-  vec3 c0 = vec3(${vec3(palette[0])});
-  vec3 c1 = vec3(${vec3(palette[1])});
-  vec3 c2 = vec3(${vec3(palette[2])});
-  vec3 c3 = vec3(${vec3(palette[3])});
-  vec3 c4 = vec3(${vec3(palette[4])});
-  g = clamp(g, 0.0, 1.0);
-  if (g < 0.25) return mix(c0, c1, g * 4.0);
-  if (g < 0.50) return mix(c1, c2, (g - 0.25) * 4.0);
-  if (g < 0.75) return mix(c2, c3, (g - 0.50) * 4.0);
-  return mix(c3, c4, (g - 0.75) * 4.0);
+float hash21c(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.2171);
+  p3 += dot(p3, p3.yzx + 41.73);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float hash21d(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1271);
+  p3 += dot(p3, p3.yzx + 28.11);
+  return fract((p3.x + p3.y) * p3.z);
 }
 `;
-}
 
 export const FULLSCREEN_VERTEX_SHADER = `#version 300 es
 void main() {
@@ -56,93 +68,131 @@ void main() {
 export const AGENT_VERTEX_SHADER = `#version 300 es
 precision highp float;
 
-uniform sampler2D uAgents;
+uniform sampler2D uState;
+uniform sampler2D uTraits;
 uniform vec2 uTrailRes;
 uniform float uAgentTexSize;
 uniform float uPointSize;
 
-flat out float vGenome;
+flat out vec4 vTraits;
+flat out float vEnergy;
 
 void main() {
   int id = gl_VertexID;
   int width = int(uAgentTexSize);
-  vec4 agent = texelFetch(uAgents, ivec2(id % width, id / width), 0);
-  gl_Position = vec4((agent.xy / uTrailRes) * 2.0 - 1.0, 0.0, 1.0);
+  ivec2 cell = ivec2(id % width, id / width);
+  vec4 state = texelFetch(uState, cell, 0);
+  vec4 traits = texelFetch(uTraits, cell, 0);
+  gl_Position = vec4((state.xy / uTrailRes) * 2.0 - 1.0, 0.0, 1.0);
   gl_PointSize = uPointSize;
-  vGenome = agent.w;
+  vTraits = traits;
+  vEnergy = state.w;
 }
 `;
 
 export function createShaderSources(preset) {
-  const sensorAngle0 = f(preset.phenotype.sensorAngle[0]);
-  const sensorAngle1 = f(preset.phenotype.sensorAngle[1]);
-  const sensorDistance0 = f(preset.phenotype.sensorDistance[0]);
-  const sensorDistance1 = f(preset.phenotype.sensorDistance[1]);
-  const turnSpeed0 = f(preset.phenotype.turnSpeed[0]);
-  const turnSpeed1 = f(preset.phenotype.turnSpeed[1]);
-  const stepSize0 = f(preset.phenotype.stepSize[0]);
-  const stepSize1 = f(preset.phenotype.stepSize[1]);
+  const { ecology, phenotype, palette, foodPalette, displayMode } = preset;
 
   const stepFragmentShader = `#version 300 es
 precision highp float;
 
-uniform sampler2D uAgents;
+uniform sampler2D uState;
+uniform sampler2D uTraits;
 uniform sampler2D uTrail;
+uniform sampler2D uFood;
 uniform vec2 uTrailRes;
 uniform float uFrame;
 
-out vec4 outAgent;
+layout(location = 0) out vec4 outState;
+layout(location = 1) out vec4 outTraits;
 
-const float KIN = ${f(preset.kin)};
-const float MUT_MAX = ${f(preset.mutMax, 6)};
-const float MUT_MIN = ${f(preset.mutMin, 6)};
-const float DRIFT = ${f(preset.drift, 6)};
-const float SPLIT = ${f(preset.splitStrength, 6)};
-const float RARITY_BOOST = ${f(preset.rarityBoost)};
-const float NICHE_SCALE = ${f(preset.nicheScale)};
-const float CROWD_START = ${f(preset.crowdingStart)};
-const float CROWD_END = ${f(preset.crowdingEnd)};
+const float KIN = ${fixed(ecology.kin)};
+const float DRIFT = ${fixed(ecology.drift, 6)};
+const float SPLIT = ${fixed(ecology.splitStrength, 6)};
+const float RARITY_BOOST = ${fixed(ecology.rarityBoost)};
+const float NICHE_SCALE = ${fixed(ecology.nicheScale)};
+const float FOOD_WEIGHT = ${fixed(ecology.foodWeight)};
+const float HUNT_WEIGHT = ${fixed(ecology.huntWeight)};
+const float AVOID_WEIGHT = ${fixed(ecology.avoidWeight)};
+const float SYMBIOSIS_WEIGHT = ${fixed(ecology.symbiosisWeight)};
+const float MUTATION_MAX = ${fixed(ecology.mutationMax, 6)};
+const float MUTATION_MIN = ${fixed(ecology.mutationMin, 6)};
+const float CROWD_START = ${fixed(ecology.crowdingStart)};
+const float CROWD_END = ${fixed(ecology.crowdingEnd)};
 
 ${HASH_GLSL}
 
-float senseKin(vec2 samplePos, float myGenome) {
-  vec2 trail = texture(uTrail, samplePos / uTrailRes).rg;
+float foodMatchScore(float foodType, float preference) {
+  return clamp(1.0 - abs(foodType - preference) * 1.8, 0.0, 1.0);
+}
+
+vec4 trailSample(vec2 samplePos) {
+  return texture(uTrail, samplePos / uTrailRes);
+}
+
+vec2 foodSample(vec2 samplePos) {
+  return texture(uFood, samplePos / uTrailRes).rg;
+}
+
+float trailResponse(vec2 samplePos, vec4 traits) {
+  vec4 trail = trailSample(samplePos);
+  vec2 food = foodSample(samplePos);
+
   float intensity = trail.r;
-  if (intensity < 0.0005) {
-    return 0.0;
-  }
-  float avgGenome = clamp(trail.g / intensity, 0.0, 1.0);
-  float kinAffinity = max(1.0 - abs(avgGenome - myGenome) * KIN, -0.35);
-  float nicheWave = 0.75 + 0.25 * cos((avgGenome - myGenome) * 6.28318 * NICHE_SCALE);
-  return intensity * kinAffinity * nicheWave;
+  float avgHue = intensity > 0.0005 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
+  float alien = abs(avgHue - traits.x);
+  float kinAffinity = max(1.0 - alien * KIN, -0.35);
+  float nicheWave = 0.75 + 0.25 * cos((avgHue - traits.x) * 6.28318 * NICHE_SCALE);
+
+  float foodDrive = food.r * foodMatchScore(food.g, traits.y) * mix(0.75, 1.45, traits.y);
+  float symbiosis = trail.b * traits.w * max(0.2, kinAffinity + 0.5);
+  float avoidance = trail.a * (1.0 - traits.z) * mix(0.45, 1.25, alien);
+  float hunting = trail.a * traits.z * alien;
+
+  return intensity * kinAffinity * nicheWave
+    + FOOD_WEIGHT * foodDrive
+    + SYMBIOSIS_WEIGHT * symbiosis
+    + HUNT_WEIGHT * hunting
+    - AVOID_WEIGHT * avoidance;
 }
 
 void main() {
-  vec4 agent = texelFetch(uAgents, ivec2(gl_FragCoord.xy), 0);
-  vec2 pos = agent.xy;
-  float angle = agent.z;
-  float genome = agent.w;
+  ivec2 cell = ivec2(gl_FragCoord.xy);
+  vec4 state = texelFetch(uState, cell, 0);
+  vec4 traits = texelFetch(uTraits, cell, 0);
 
-  float sensorAngle = mix(${sensorAngle0}, ${sensorAngle1}, genome);
-  float sensorDistance = mix(${sensorDistance0}, ${sensorDistance1}, genome);
-  float turnSpeed = mix(${turnSpeed0}, ${turnSpeed1}, genome);
-  float stepSize = mix(${stepSize0}, ${stepSize1}, genome);
+  vec2 pos = state.xy;
+  float angle = state.z;
+  float energy = state.w;
+
+  float speciesHue = traits.x;
+  float foodPreference = traits.y;
+  float aggression = traits.z;
+  float sociality = traits.w;
+
+  float sensorAngle = mix(${fixed(phenotype.sensorAngle[0])}, ${fixed(phenotype.sensorAngle[1])}, speciesHue);
+  float sensorDistance = mix(${fixed(phenotype.sensorDistance[0])}, ${fixed(phenotype.sensorDistance[1])}, foodPreference);
+  float turnSpeed = mix(${fixed(phenotype.turnSpeed[0])}, ${fixed(phenotype.turnSpeed[1])}, aggression);
+  float baseStepSize = mix(${fixed(phenotype.stepSize[0])}, ${fixed(phenotype.stepSize[1])}, foodPreference);
+  float stepSize = baseStepSize * mix(0.45, 1.10, energy);
 
   vec2 dirForward = vec2(cos(angle), sin(angle));
   vec2 dirLeft = vec2(cos(angle + sensorAngle), sin(angle + sensorAngle));
   vec2 dirRight = vec2(cos(angle - sensorAngle), sin(angle - sensorAngle));
 
-  float senseForward = senseKin(pos + dirForward * sensorDistance, genome);
-  float senseLeft = senseKin(pos + dirLeft * sensorDistance, genome);
-  float senseRight = senseKin(pos + dirRight * sensorDistance, genome);
+  float senseForward = trailResponse(pos + dirForward * sensorDistance, traits);
+  float senseLeft = trailResponse(pos + dirLeft * sensorDistance, traits);
+  float senseRight = trailResponse(pos + dirRight * sensorDistance, traits);
 
   float randomTurn = hash21(gl_FragCoord.xy * 317.7 + fract(uFrame * 0.1731));
-  float randomMutation = hash21b(gl_FragCoord.xy * 419.3 + fract(uFrame * 0.2917));
+  float randomA = hash21b(gl_FragCoord.xy * 419.3 + fract(uFrame * 0.2917));
+  float randomB = hash21c(gl_FragCoord.xy * 251.1 + fract(uFrame * 0.1371));
+  float randomC = hash21d(gl_FragCoord.xy * 179.1 + fract(uFrame * 0.2217));
 
   if (senseForward > senseLeft && senseForward > senseRight) {
     angle += (randomTurn - 0.5) * 0.05;
   } else if (senseForward < senseLeft && senseForward < senseRight) {
-    angle += (randomTurn > 0.5 ? turnSpeed : -turnSpeed);
+    angle += randomTurn > 0.5 ? turnSpeed : -turnSpeed;
   } else if (senseLeft > senseRight) {
     angle += turnSpeed;
   } else {
@@ -152,35 +202,62 @@ void main() {
   pos += vec2(cos(angle), sin(angle)) * stepSize;
   pos = mod(pos + uTrailRes, uTrailRes);
 
-  vec2 localTrail = texture(uTrail, pos / uTrailRes).rg;
-  float wellbeing = clamp(localTrail.r * 4.0, 0.0, 1.0);
+  vec4 localTrail = trailSample(pos);
+  vec2 localFood = foodSample(pos);
+  float localAvgHue = localTrail.r > 0.0005 ? clamp(localTrail.g / localTrail.r, 0.0, 1.0) : speciesHue;
+  float alien = abs(localAvgHue - speciesHue);
   float overcrowding = smoothstep(CROWD_START, CROWD_END, localTrail.r);
-  float mutationStrength = mix(MUT_MAX, MUT_MIN, wellbeing) + MUT_MAX * overcrowding;
+  float foodMatch = foodMatchScore(localFood.g, foodPreference);
 
-  genome += (randomMutation - 0.5) * 2.0 * mutationStrength;
+  float foodGain = localFood.r * foodMatch * mix(0.012, 0.024, foodPreference);
+  float huntGain = localTrail.a * aggression * alien * 0.004;
+  float socialGain = localTrail.b * sociality * max(0.0, 1.0 - alien * 2.0) * 0.002;
+  float cost = 0.003 + stepSize * 0.0014 + aggression * 0.0016;
+  energy = clamp(energy + foodGain + huntGain + socialGain - cost, 0.0, 1.0);
+
+  float mutationStrength = mix(MUTATION_MAX, MUTATION_MIN, energy) + MUTATION_MAX * overcrowding;
+
+  speciesHue += (randomA - 0.5) * 2.0 * mutationStrength;
+  foodPreference += (randomB - 0.5) * mutationStrength * 0.9;
+  aggression += (randomC - 0.5) * mutationStrength * 0.8;
+  sociality += (randomTurn - 0.5) * mutationStrength * 0.8;
 
   if (localTrail.r > 0.004) {
-    float localAvgGenome = clamp(localTrail.g / localTrail.r, 0.0, 1.0);
-    float kinSimilarity = max(0.0, 1.0 - abs(localAvgGenome - genome) * 3.0);
-    float rarity = abs(localAvgGenome - genome);
-    float branchPush = sign(randomMutation - 0.5) * overcrowding * (0.45 + rarity * RARITY_BOOST) * SPLIT;
-    genome += (localAvgGenome - genome) * DRIFT * wellbeing * kinSimilarity;
-    genome += branchPush;
+    float kinSimilarity = max(0.0, 1.0 - abs(localAvgHue - speciesHue) * 3.0);
+    float branchPush = sign(randomA - 0.5) * overcrowding * (0.45 + alien * RARITY_BOOST) * SPLIT;
+    speciesHue += (localAvgHue - speciesHue) * DRIFT * kinSimilarity * energy;
+    speciesHue += branchPush;
+    sociality += (localTrail.b - sociality) * DRIFT * 0.35;
+    aggression += (localTrail.a - aggression) * DRIFT * 0.20;
   }
 
-  genome = clamp(genome, 0.0, 1.0);
-  outAgent = vec4(pos, angle, genome);
+  speciesHue = fract(speciesHue + 1.0);
+  foodPreference = clamp(foodPreference, 0.0, 1.0);
+  aggression = clamp(aggression, 0.0, 1.0);
+  sociality = clamp(sociality, 0.0, 1.0);
+
+  outState = vec4(pos, angle, energy);
+  outTraits = vec4(speciesHue, foodPreference, aggression, sociality);
 }
 `;
 
   const depositFragmentShader = `#version 300 es
 precision highp float;
 
-flat in float vGenome;
+flat in vec4 vTraits;
+flat in float vEnergy;
 out vec4 fragColor;
 
+const float BASE_DEPOSIT = ${fixed(preset.baseDeposit)};
+
 void main() {
-  fragColor = vec4(${f(preset.deposit)}, ${f(preset.deposit)} * vGenome, 0.0, 1.0);
+  float intensity = BASE_DEPOSIT * mix(0.20, 1.0, vEnergy);
+  fragColor = vec4(
+    intensity,
+    intensity * vTraits.x,
+    intensity * vTraits.w,
+    intensity * vTraits.z
+  );
 }
 `;
 
@@ -196,33 +273,36 @@ out vec4 fragColor;
 
 void main() {
   vec2 uv = gl_FragCoord.xy * uPixelSize;
-  vec2 sum = vec2(0.0);
+  vec4 sum = vec4(0.0);
 
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
-      sum += texture(uTrail, uv + vec2(float(dx), float(dy)) * uPixelSize).rg;
+      sum += texture(uTrail, uv + vec2(float(dx), float(dy)) * uPixelSize);
     }
   }
 
-  vec2 result = (sum / 9.0) * uDecay;
-  result = min(result, vec2(${f(preset.trailCap)}));
+  vec4 result = (sum / 9.0) * uDecay;
+  result = min(result, vec4(${fixed(preset.trailCap)}));
 
   if (uMouse.z > 0.5) {
     float distanceToMouse = length(gl_FragCoord.xy - uMouse.xy);
-    float deposit = exp(-(distanceToMouse * distanceToMouse) / 3200.0) * ${f(preset.mouseDeposit)};
-    float localGenome = result.r > 0.001 ? clamp(result.g / result.r, 0.0, 1.0) : 0.5;
-    result += vec2(deposit, deposit * localGenome);
+    float deposit = exp(-(distanceToMouse * distanceToMouse) / 3200.0) * ${fixed(preset.mouseDeposit)};
+    float localHue = result.r > 0.001 ? clamp(result.g / result.r, 0.0, 1.0) : 0.5;
+    result += vec4(deposit, deposit * localHue, deposit * 0.18, deposit * 0.06);
   }
 
-  fragColor = vec4(result, 0.0, 1.0);
+  fragColor = result;
 }
 `;
 
-  const spectrum = spectrumGLSL(preset.palette);
+  const spectrum = spectrumGLSL(palette);
+  const foodColor = vec3(foodPalette);
+
   const displayFragmentShader = `#version 300 es
 precision highp float;
 
 uniform sampler2D uTrail;
+uniform sampler2D uFood;
 uniform vec2 uResolution;
 uniform float uTime;
 
@@ -231,45 +311,48 @@ out vec4 fragColor;
 ${HASH_GLSL}
 ${spectrum}
 
-vec3 renderDark(vec2 uv, float intensity, float genome) {
-  vec3 hue = spectrum(genome);
-  float bright = 1.0 - exp(-intensity * ${f(preset.exposure, 1)});
-  vec3 color = hue * bright;
-  vec2 pixel = 1.0 / uResolution;
-  float bloomIntensity = 0.0;
-  float bloomGenome = 0.0;
-  for (int i = 0; i < 8; i++) {
-    float angle = float(i) * 0.7854;
-    vec2 trail = texture(uTrail, uv + vec2(cos(angle), sin(angle)) * pixel * 4.0).rg;
-    bloomIntensity += trail.r;
-    bloomGenome += trail.g;
-  }
-  bloomIntensity /= 8.0;
-  bloomGenome = bloomIntensity > 0.001 ? bloomGenome / 8.0 / bloomIntensity : 0.5;
-  color += spectrum(clamp(bloomGenome, 0.0, 1.0)) * (1.0 - exp(-bloomIntensity * ${f(preset.exposure, 1)})) * 0.15;
+vec3 foodTint(float amount, float typeValue) {
+  vec3 nutrient = vec3(${foodColor});
+  vec3 accent = spectrum(typeValue);
+  return mix(nutrient, accent, 0.25 + amount * 0.30);
+}
+
+vec3 renderDark(vec2 uv, vec4 trail, vec2 food) {
+  float intensity = trail.r;
+  float hueValue = intensity > 0.001 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
+  vec3 color = spectrum(hueValue) * (1.0 - exp(-intensity * ${fixed(preset.exposure, 1)}));
+  color += foodTint(food.r, food.g) * food.r * 0.18;
   vec2 vignette = uv * (1.0 - uv);
   color *= pow(clamp(vignette.x * vignette.y * 18.0, 0.0, 1.0), 0.35);
   return color;
 }
 
-vec3 renderDish(vec2 uv, float intensity, float genome) {
-  vec3 agar = vec3(0.985, 0.970, 0.915);
-  vec3 colony = spectrum(genome);
-  float amount = 1.0 - exp(-intensity * ${f(preset.exposure, 1)});
-  vec3 color = agar * (1.0 - amount * 0.70) + colony * amount * 0.90;
-  color += colony * pow(amount, 1.6) * 0.18;
+vec3 renderDish(vec2 uv, vec4 trail, vec2 food) {
+  float intensity = trail.r;
+  float hueValue = intensity > 0.001 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
+  vec3 agar = vec3(0.987, 0.972, 0.925);
+  vec3 nutrient = foodTint(food.r, food.g);
+  vec3 colony = spectrum(hueValue);
+  float foodGlow = clamp(food.r * 0.90, 0.0, 1.0);
+  float colonyAmount = 1.0 - exp(-intensity * ${fixed(preset.exposure, 1)});
+  vec3 color = mix(agar, nutrient, foodGlow * 0.52);
+  color = mix(color, colony, colonyAmount * 0.84);
+  color += colony * pow(colonyAmount, 1.7) * 0.18;
   vec2 center = (uv - 0.5) * 2.0;
   center.x *= uResolution.x / uResolution.y;
   float dishEdge = 1.0 - smoothstep(0.88, 0.97, length(center));
-  vec3 rim = mix(vec3(0.91, 0.89, 0.82), color, dishEdge);
-  return rim;
+  return mix(vec3(0.91, 0.89, 0.82), color, dishEdge);
 }
 
-vec3 renderScope(vec2 uv, float intensity, float genome) {
-  vec3 background = vec3(0.96, 0.94, 0.89);
-  vec3 stain = spectrum(genome);
-  float amount = 1.0 - exp(-intensity * ${f(preset.exposure, 1)});
-  vec3 color = background * (1.0 - amount * 0.82) + stain * amount * 0.38;
+vec3 renderScope(vec2 uv, vec4 trail, vec2 food) {
+  float intensity = trail.r;
+  float hueValue = intensity > 0.001 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
+  vec3 base = vec3(0.965, 0.952, 0.915);
+  vec3 nutrient = foodTint(food.r, food.g);
+  vec3 stain = spectrum(hueValue);
+  float amount = 1.0 - exp(-intensity * ${fixed(preset.exposure, 1)});
+  vec3 color = mix(base, nutrient, food.r * 0.22);
+  color = mix(color, stain, amount * 0.44);
   vec2 centered = (uv - 0.5) * 2.0;
   centered.x *= uResolution.x / uResolution.y;
   float eyepiece = 1.0 - smoothstep(0.88, 0.96, length(centered));
@@ -278,20 +361,20 @@ vec3 renderScope(vec2 uv, float intensity, float genome) {
 
 void main() {
   vec2 uv = gl_FragCoord.xy / uResolution;
-  vec2 trail = texture(uTrail, uv).rg;
-  float intensity = trail.r;
-  float genome = intensity > 0.001 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
+  vec4 trail = texture(uTrail, uv);
+  vec2 food = texture(uFood, uv).rg;
   vec3 color;
 
-  if (${preset.displayMode === "dark" ? 1 : 0} == 1) {
-    color = renderDark(uv, intensity, genome);
-  } else if (${preset.displayMode === "scope" ? 1 : 0} == 1) {
-    color = renderScope(uv, intensity, genome);
+  if (${displayMode === "dark" ? 1 : 0} == 1) {
+    color = renderDark(uv, trail, food);
+  } else if (${displayMode === "scope" ? 1 : 0} == 1) {
+    color = renderScope(uv, trail, food);
   } else {
-    color = renderDish(uv, intensity, genome);
+    color = renderDish(uv, trail, food);
   }
 
-  color += (hash(uv * 1733.0 + fract(uTime * 1.7)) - 0.5) * 0.012;
+  float grain = ${displayMode === "dark" ? "0.010" : "0.004"};
+  color += (hash(uv * 1733.0 + fract(uTime * 1.7)) - 0.5) * grain;
   fragColor = vec4(max(color, 0.0), 1.0);
 }
 `;
@@ -299,7 +382,8 @@ void main() {
   const agentRenderFragmentShader = `#version 300 es
 precision highp float;
 
-flat in float vGenome;
+flat in vec4 vTraits;
+flat in float vEnergy;
 out vec4 fragColor;
 
 ${spectrum}
@@ -310,8 +394,8 @@ void main() {
   if (radius > 1.0) {
     discard;
   }
-  float alpha = smoothstep(1.0, 0.0, radius) * 0.52;
-  fragColor = vec4(spectrum(vGenome) * 0.92, alpha);
+  float alpha = smoothstep(1.0, 0.0, radius) * mix(0.15, 0.62, vEnergy);
+  fragColor = vec4(spectrum(vTraits.x) * 0.94, alpha);
 }
 `;
 
