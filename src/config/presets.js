@@ -39,6 +39,8 @@ export const PRESETS = [
       maxRadius: 48,
       floor: 0.02,
       amplitude: 0.46,
+      consumeRate: 0.0035,
+      regrowRate: 0.0006,
     },
     palette: [
       [1.00, 0.50, 0.40],
@@ -89,6 +91,8 @@ export const PRESETS = [
       maxRadius: 58,
       floor: 0.01,
       amplitude: 0.86,
+      consumeRate: 0.0048,
+      regrowRate: 0.0010,
     },
     palette: [
       [0.98, 0.55, 0.60],
@@ -139,6 +143,8 @@ export const PRESETS = [
       maxRadius: 44,
       floor: 0.01,
       amplitude: 0.92,
+      consumeRate: 0.0055,
+      regrowRate: 0.0008,
     },
     palette: [
       [0.56, 0.28, 0.80],
@@ -189,6 +195,8 @@ export const PRESETS = [
       maxRadius: 54,
       floor: 0.01,
       amplitude: 0.82,
+      consumeRate: 0.0042,
+      regrowRate: 0.0009,
     },
     palette: [
       [0.99, 0.57, 0.60],

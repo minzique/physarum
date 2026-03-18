@@ -148,7 +148,10 @@ export class PhysarumSimulation {
     this.stateFramebuffers = [null, null];
     this.trailTextures = [null, null];
     this.trailFramebuffers = [null, null];
-    this.foodTexture = null;
+    this.foodTextures = [null, null];
+    this.foodFramebuffers = [null, null];
+    this.foodOriginalTexture = null;
+    this.pingFood = 0;
 
     this.pingAgent = 0;
     this.pingTrail = 0;
@@ -181,7 +184,7 @@ export class PhysarumSimulation {
     const gl = this.gl;
     const sources = createShaderSources(this.preset);
 
-    for (const program of [this.stepProgram, this.depositProgram, this.diffuseProgram, this.displayProgram, this.agentRenderProgram]) {
+    for (const program of [this.stepProgram, this.depositProgram, this.diffuseProgram, this.displayProgram, this.agentRenderProgram, this.foodUpdateProgram]) {
       if (program) {
         gl.deleteProgram(program);
       }
@@ -194,6 +197,7 @@ export class PhysarumSimulation {
     this.agentRenderProgram = this.preset.pointSize > 0
       ? createProgram(gl, AGENT_VERTEX_SHADER, sources.agentRenderFragmentShader)
       : null;
+    this.foodUpdateProgram = createProgram(gl, FULLSCREEN_VERTEX_SHADER, sources.foodUpdateFragmentShader);
 
     this.stepUniforms = getUniforms(gl, this.stepProgram, "uState", "uTraits", "uTrail", "uFood", "uTrailRes", "uFrame");
     this.depositUniforms = getUniforms(gl, this.depositProgram, "uState", "uTraits", "uTrailRes", "uAgentTexSize", "uPointSize");
@@ -202,6 +206,7 @@ export class PhysarumSimulation {
     this.agentRenderUniforms = this.agentRenderProgram
       ? getUniforms(gl, this.agentRenderProgram, "uState", "uTraits", "uTrailRes", "uAgentTexSize", "uPointSize")
       : null;
+    this.foodUpdateUniforms = getUniforms(gl, this.foodUpdateProgram, "uFood", "uFoodOriginal", "uTrail", "uPixelSize");
   }
 
   initAgentData() {
@@ -255,8 +260,12 @@ export class PhysarumSimulation {
       if (this.trailFramebuffers[index]) gl.deleteFramebuffer(this.trailFramebuffers[index]);
     }
 
-    if (this.foodTexture) {
-      gl.deleteTexture(this.foodTexture);
+    for (let index = 0; index < 2; index += 1) {
+      if (this.foodTextures[index]) gl.deleteTexture(this.foodTextures[index]);
+      if (this.foodFramebuffers[index]) gl.deleteFramebuffer(this.foodFramebuffers[index]);
+    }
+    if (this.foodOriginalTexture) {
+      gl.deleteTexture(this.foodOriginalTexture);
     }
 
     const food = generateFoodData(this.preset);
@@ -279,11 +288,16 @@ export class PhysarumSimulation {
     }
 
     this.foodSize = food.size;
-    this.foodTexture = createTexture(gl, food.size, food.size, gl.RGBA32F, gl.RGBA, gl.FLOAT, food.data, gl.LINEAR);
+    this.foodOriginalTexture = createTexture(gl, food.size, food.size, gl.RGBA32F, gl.RGBA, gl.FLOAT, food.data, gl.LINEAR);
+    for (let index = 0; index < 2; index += 1) {
+      this.foodTextures[index] = createTexture(gl, food.size, food.size, gl.RGBA32F, gl.RGBA, gl.FLOAT, food.data, gl.LINEAR);
+      this.foodFramebuffers[index] = createFramebuffer(gl, this.foodTextures[index]);
+    }
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.pingAgent = 0;
     this.pingTrail = 0;
+    this.pingFood = 0;
   }
 
   setPreset(index) {
@@ -366,7 +380,7 @@ export class PhysarumSimulation {
     gl.bindTexture(gl.TEXTURE_2D, this.trailTextures[readTrail]);
     gl.uniform1i(this.stepUniforms.uTrail, 2);
     gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, this.foodTexture);
+    gl.bindTexture(gl.TEXTURE_2D, this.foodTextures[this.pingFood]);
     gl.uniform1i(this.stepUniforms.uFood, 3);
     gl.uniform2f(this.stepUniforms.uTrailRes, this.trailWidth, this.trailHeight);
     gl.uniform1f(this.stepUniforms.uFrame, this.totalSteps);
@@ -399,8 +413,28 @@ export class PhysarumSimulation {
     gl.drawArrays(gl.POINTS, 0, NUM_AGENTS);
     gl.disable(gl.BLEND);
 
+    // Food consumption + regrowth
+    const readFood = this.pingFood;
+    const writeFood = 1 - this.pingFood;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.foodFramebuffers[writeFood]);
+    gl.viewport(0, 0, this.foodSize, this.foodSize);
+    gl.disable(gl.BLEND);
+    gl.useProgram(this.foodUpdateProgram);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.foodTextures[readFood]);
+    gl.uniform1i(this.foodUpdateUniforms.uFood, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.foodOriginalTexture);
+    gl.uniform1i(this.foodUpdateUniforms.uFoodOriginal, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.trailTextures[writeTrail]);
+    gl.uniform1i(this.foodUpdateUniforms.uTrail, 2);
+    gl.uniform2f(this.foodUpdateUniforms.uPixelSize, 1 / this.foodSize, 1 / this.foodSize);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
     this.pingAgent = writeAgent;
     this.pingTrail = writeTrail;
+    this.pingFood = writeFood;
   }
 
   render(now) {
@@ -418,7 +452,7 @@ export class PhysarumSimulation {
     gl.bindTexture(gl.TEXTURE_2D, this.trailTextures[this.pingTrail]);
     gl.uniform1i(this.displayUniforms.uTrail, 0);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.foodTexture);
+    gl.bindTexture(gl.TEXTURE_2D, this.foodTextures[this.pingFood]);
     gl.uniform1i(this.displayUniforms.uFood, 1);
     gl.uniform2f(this.displayUniforms.uResolution, this.trailWidth, this.trailHeight);
     gl.uniform1f(this.displayUniforms.uTime, elapsed);

@@ -399,11 +399,42 @@ void main() {
 }
 `;
 
+  const foodUpdateFragmentShader = `#version 300 es
+precision highp float;
+
+uniform sampler2D uFood;
+uniform sampler2D uFoodOriginal;
+uniform sampler2D uTrail;
+uniform vec2 uPixelSize;
+
+out vec4 fragColor;
+
+const float CONSUME_RATE = ${fixed(preset.food.consumeRate, 6)};
+const float REGROW_RATE = ${fixed(preset.food.regrowRate, 6)};
+
+void main() {
+  vec2 uv = gl_FragCoord.xy * uPixelSize;
+  vec4 current = texture(uFood, uv);
+  vec4 original = texture(uFoodOriginal, uv);
+  float trailDensity = texture(uTrail, uv).r;
+
+  float consumption = trailDensity * CONSUME_RATE;
+  float amount = max(current.r - consumption, 0.0);
+
+  float regrowth = (original.r - amount) * REGROW_RATE;
+  amount += max(regrowth, 0.0);
+  amount = min(amount, original.r * 1.05);
+
+  fragColor = vec4(amount, original.g, current.b, 1.0);
+}
+`;
+
   return {
     stepFragmentShader,
     depositFragmentShader,
     diffuseFragmentShader,
     displayFragmentShader,
     agentRenderFragmentShader,
+    foodUpdateFragmentShader,
   };
 }
