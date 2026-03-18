@@ -21,3 +21,9 @@ That visual mode is now preserved as the `RIBBON DRIFT` preset so it can still b
 - Increase mutation under crowding so dominant regions split into daughter clades
 - Keep drift weak and kin-conditional so species interact without homogenizing
 - Use light-field display modes for petri dish and microscope views
+
+## Current implementation direction
+
+- Agents now evolve across multiple traits instead of a single genome axis: hue/species identity, food preference, aggression, and sociality
+- Interaction modes are indirect but distinct: aggressive lineages hunt conflict edges, cautious ones avoid them, and social ones reinforce shared lanes
+- Static food fields create nutrient niches so colonies specialize instead of competing over one homogeneous environment
