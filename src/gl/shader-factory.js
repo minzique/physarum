@@ -73,7 +73,6 @@ uniform sampler2D uTraits;
 uniform vec2 uTrailRes;
 uniform float uAgentTexSize;
 uniform float uPointSize;
-uniform vec3 uView; // x,y=offset, z=scale
 
 flat out vec4 vTraits;
 flat out float vEnergy;
@@ -84,12 +83,8 @@ void main() {
   ivec2 cell = ivec2(id % width, id / width);
   vec4 state = texelFetch(uState, cell, 0);
   vec4 traits = texelFetch(uTraits, cell, 0);
-
-  vec2 uv = state.xy / uTrailRes;
-  vec2 viewUV = (uv - uView.xy) / uView.z;
-  gl_Position = vec4(viewUV * 2.0 - 1.0, 0.0, 1.0);
-
-  gl_PointSize = uPointSize / uView.z;
+  gl_Position = vec4((state.xy / uTrailRes) * 2.0 - 1.0, 0.0, 1.0);
+  gl_PointSize = uPointSize;
   vTraits = traits;
   vEnergy = state.w;
 }
@@ -310,7 +305,6 @@ uniform sampler2D uTrail;
 uniform sampler2D uFood;
 uniform vec2 uResolution;
 uniform float uTime;
-uniform vec3 uView; // x,y=offset, z=scale
 
 out vec4 fragColor;
 
@@ -323,17 +317,17 @@ vec3 foodTint(float amount, float typeValue) {
   return mix(nutrient, accent, 0.25 + amount * 0.30);
 }
 
-vec3 renderDark(vec2 screenUV, vec4 trail, vec2 food) {
+vec3 renderDark(vec2 uv, vec4 trail, vec2 food) {
   float intensity = trail.r;
   float hueValue = intensity > 0.001 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
   vec3 color = spectrum(hueValue) * (1.0 - exp(-intensity * ${fixed(preset.exposure, 1)}));
   color += foodTint(food.r, food.g) * food.r * 0.18;
-  vec2 vignette = screenUV * (1.0 - screenUV);
+  vec2 vignette = uv * (1.0 - uv);
   color *= pow(clamp(vignette.x * vignette.y * 18.0, 0.0, 1.0), 0.35);
   return color;
 }
 
-vec3 renderDish(vec2 screenUV, vec4 trail, vec2 food) {
+vec3 renderDish(vec2 uv, vec4 trail, vec2 food) {
   float intensity = trail.r;
   float hueValue = intensity > 0.001 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
   vec3 agar = vec3(0.987, 0.972, 0.925);
@@ -344,13 +338,13 @@ vec3 renderDish(vec2 screenUV, vec4 trail, vec2 food) {
   vec3 color = mix(agar, nutrient, foodGlow * 0.52);
   color = mix(color, colony, colonyAmount * 0.84);
   color += colony * pow(colonyAmount, 1.7) * 0.18;
-  vec2 center = (screenUV - 0.5) * 2.0;
+  vec2 center = (uv - 0.5) * 2.0;
   center.x *= uResolution.x / uResolution.y;
   float dishEdge = 1.0 - smoothstep(0.88, 0.97, length(center));
   return mix(vec3(0.91, 0.89, 0.82), color, dishEdge);
 }
 
-vec3 renderScope(vec2 screenUV, vec4 trail, vec2 food) {
+vec3 renderScope(vec2 uv, vec4 trail, vec2 food) {
   float intensity = trail.r;
   float hueValue = intensity > 0.001 ? clamp(trail.g / intensity, 0.0, 1.0) : 0.5;
   vec3 base = vec3(0.965, 0.952, 0.915);
@@ -359,30 +353,28 @@ vec3 renderScope(vec2 screenUV, vec4 trail, vec2 food) {
   float amount = 1.0 - exp(-intensity * ${fixed(preset.exposure, 1)});
   vec3 color = mix(base, nutrient, food.r * 0.22);
   color = mix(color, stain, amount * 0.44);
-  vec2 centered = (screenUV - 0.5) * 2.0;
+  vec2 centered = (uv - 0.5) * 2.0;
   centered.x *= uResolution.x / uResolution.y;
   float eyepiece = 1.0 - smoothstep(0.88, 0.96, length(centered));
   return mix(vec3(0.06), color, eyepiece);
 }
 
 void main() {
-  vec2 screenUV = gl_FragCoord.xy / uResolution;
-  vec2 worldUV = screenUV * uView.z + uView.xy;
-
-  vec4 trail = texture(uTrail, worldUV);
-  vec2 food = texture(uFood, worldUV).rg;
+  vec2 uv = gl_FragCoord.xy / uResolution;
+  vec4 trail = texture(uTrail, uv);
+  vec2 food = texture(uFood, uv).rg;
   vec3 color;
 
   if (${displayMode === "dark" ? 1 : 0} == 1) {
-    color = renderDark(screenUV, trail, food);
+    color = renderDark(uv, trail, food);
   } else if (${displayMode === "scope" ? 1 : 0} == 1) {
-    color = renderScope(screenUV, trail, food);
+    color = renderScope(uv, trail, food);
   } else {
-    color = renderDish(screenUV, trail, food);
+    color = renderDish(uv, trail, food);
   }
 
   float grain = ${displayMode === "dark" ? "0.010" : "0.004"};
-  color += (hash(screenUV * 1733.0 + fract(uTime * 1.7)) - 0.5) * grain;
+  color += (hash(uv * 1733.0 + fract(uTime * 1.7)) - 0.5) * grain;
   fragColor = vec4(max(color, 0.0), 1.0);
 }
 `;
