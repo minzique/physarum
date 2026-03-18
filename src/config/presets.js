@@ -209,4 +209,4 @@ export const PRESETS = [
   },
 ];
 
-export const DEFAULT_PRESET_INDEX = 1;
+export const DEFAULT_PRESET_INDEX = 2;

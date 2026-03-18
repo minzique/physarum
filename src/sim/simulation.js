@@ -156,7 +156,7 @@ export class PhysarumSimulation {
     this.pingAgent = 0;
     this.pingTrail = 0;
     this.totalSteps = 0;
-    this.substeps = 6;
+    this.substeps = 2;
     this.turbo = false;
     this.startTime = performance.now();
 
@@ -302,7 +302,7 @@ export class PhysarumSimulation {
 
   setPreset(index) {
     this.presetIndex = index;
-    this.substeps = this.turbo ? 64 : 6;
+    this.substeps = this.turbo ? 64 : 2;
     this.buildPrograms();
     this.computeSize();
     this.buildResources();
@@ -328,7 +328,7 @@ export class PhysarumSimulation {
 
   toggleTurbo() {
     this.turbo = !this.turbo;
-    this.substeps = this.turbo ? 64 : 6;
+    this.substeps = this.turbo ? 64 : 2;
     this.emitState();
   }
 
