@@ -142,6 +142,7 @@ export class PhysarumSimulation {
 
     this.emptyVAO = this.gl.createVertexArray();
     this.mouse = { x: 0, y: 0, active: false };
+    this.view = { x: 0, y: 0, scale: 1 };
 
     this.stateTextures = [null, null];
     this.traitTextures = [null, null];
@@ -202,9 +203,9 @@ export class PhysarumSimulation {
     this.stepUniforms = getUniforms(gl, this.stepProgram, "uState", "uTraits", "uTrail", "uFood", "uTrailRes", "uFrame");
     this.depositUniforms = getUniforms(gl, this.depositProgram, "uState", "uTraits", "uTrailRes", "uAgentTexSize", "uPointSize");
     this.diffuseUniforms = getUniforms(gl, this.diffuseProgram, "uTrail", "uPixelSize", "uDecay", "uMouse");
-    this.displayUniforms = getUniforms(gl, this.displayProgram, "uTrail", "uFood", "uResolution", "uTime");
+    this.displayUniforms = getUniforms(gl, this.displayProgram, "uTrail", "uFood", "uResolution", "uTime", "uView");
     this.agentRenderUniforms = this.agentRenderProgram
-      ? getUniforms(gl, this.agentRenderProgram, "uState", "uTraits", "uTrailRes", "uAgentTexSize", "uPointSize")
+      ? getUniforms(gl, this.agentRenderProgram, "uState", "uTraits", "uTrailRes", "uAgentTexSize", "uPointSize", "uView")
       : null;
     this.foodUpdateUniforms = getUniforms(gl, this.foodUpdateProgram, "uFood", "uFoodOriginal", "uTrail", "uPixelSize");
   }
@@ -334,9 +335,45 @@ export class PhysarumSimulation {
 
   setMousePosition(clientX, clientY) {
     const rect = this.canvas.getBoundingClientRect();
-    this.mouse.x = ((clientX - rect.left) / rect.width) * this.trailWidth;
-    this.mouse.y = (1 - (clientY - rect.top) / rect.height) * this.trailHeight;
+    const nx = (clientX - rect.left) / rect.width;
+    const ny = 1 - (clientY - rect.top) / rect.height;
+
+    // Mouse coordinates in simulation world space (taking view into account)
+    this.mouse.x = (nx * this.view.scale + this.view.x) * this.trailWidth;
+    this.mouse.y = (ny * this.view.scale + this.view.y) * this.trailHeight;
     this.mouse.active = true;
+  }
+
+  zoom(delta, clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    const px = (clientX - rect.left) / rect.width;
+    const py = 1 - (clientY - rect.top) / rect.height;
+
+    const oldScale = this.view.scale;
+    const factor = delta > 0 ? 1.1 : 0.909;
+    this.view.scale = clamp(this.view.scale * factor, 0.05, 1.0);
+
+    // Maintain world position under pointer
+    this.view.x += px * (oldScale - this.view.scale);
+    this.view.y += py * (oldScale - this.view.scale);
+    this.clampView();
+  }
+
+  pan(dx, dy) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.view.x -= (dx / rect.width) * this.view.scale;
+    this.view.y += (dy / rect.height) * this.view.scale;
+    this.clampView();
+  }
+
+  clampView() {
+    this.view.scale = clamp(this.view.scale, 0.05, 1.0);
+    this.view.x = clamp(this.view.x, 0, 1 - this.view.scale);
+    this.view.y = clamp(this.view.y, 0, 1 - this.view.scale);
+  }
+
+  resetView() {
+    this.view = { x: 0, y: 0, scale: 1 };
   }
 
   setMouseActive(active) {
@@ -456,6 +493,7 @@ export class PhysarumSimulation {
     gl.uniform1i(this.displayUniforms.uFood, 1);
     gl.uniform2f(this.displayUniforms.uResolution, this.trailWidth, this.trailHeight);
     gl.uniform1f(this.displayUniforms.uTime, elapsed);
+    gl.uniform3f(this.displayUniforms.uView, this.view.x, this.view.y, this.view.scale);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     if (this.agentRenderProgram) {
@@ -471,6 +509,7 @@ export class PhysarumSimulation {
       gl.uniform2f(this.agentRenderUniforms.uTrailRes, this.trailWidth, this.trailHeight);
       gl.uniform1f(this.agentRenderUniforms.uAgentTexSize, AGENT_TEX_SIZE);
       gl.uniform1f(this.agentRenderUniforms.uPointSize, this.preset.pointSize);
+      gl.uniform3f(this.agentRenderUniforms.uView, this.view.x, this.view.y, this.view.scale);
       gl.drawArrays(gl.POINTS, 0, NUM_AGENTS);
       gl.disable(gl.BLEND);
     }

@@ -49,8 +49,17 @@ function frame(now) {
 }
 
 function handlePointerMove(event) {
-  simulation.setMousePosition(event.clientX, event.clientY);
+  if (event.shiftKey && event.buttons === 1) {
+    simulation.pan(event.movementX, event.movementY);
+  } else {
+    simulation.setMousePosition(event.clientX, event.clientY);
+  }
 }
+
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  simulation.zoom(event.deltaY, event.clientX, event.clientY);
+}, { passive: false });
 
 canvas.addEventListener("mousemove", handlePointerMove);
 canvas.addEventListener("mouseenter", handlePointerMove);
@@ -91,6 +100,9 @@ window.addEventListener("keydown", (event) => {
     case "r":
     case "R":
       simulation.reset();
+      break;
+    case "0":
+      simulation.resetView();
       break;
   }
 });
